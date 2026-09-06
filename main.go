@@ -77,6 +77,7 @@ func run() error {
 	validator := newSecurityValidator(cfg.Security, log)
 	executor := newCommandExecutor(cfg.Security, log)
 	shellHandler := newShellHandler(validator, executor, log)
+	policyHandler := newPolicyHandler(cfg.Security, log)
 
 	s := server.NewMCPServer(
 		cfg.Server.Name,
@@ -103,6 +104,15 @@ func run() error {
 	)
 
 	s.AddTool(shellTool, shellHandler.handle)
+
+	allowedCommandsTool := mcp.NewTool(
+		"list_allowed_commands",
+		mcp.WithDescription(
+			"List the effective executable allowlist and shell security mode currently used by mcp-shell.",
+		),
+	)
+
+	s.AddTool(allowedCommandsTool, policyHandler.listAllowedCommands)
 
 	log.Info().Msg("MCP server initialized, serving on stdio")
 

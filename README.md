@@ -112,12 +112,18 @@ For custom config, mount the file and set the env:
 
 ## Tool API
 
+### `shell_exec`
+
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `command` | string | Shell command to run (required) |
 | `base64` | boolean | Encode stdout/stderr as base64 (default: false) |
 
 Response includes `status`, `exit_code`, `stdout`, `stderr`, `command`, `execution_time`, and optional `security_info`.
+
+### `list_allowed_commands`
+
+Returns the effective security mode and executable allowlist loaded by the server. It reflects the runtime configuration after defaults and `MCP_SHELL_SEC_CONFIG_FILE` have been applied; it does not independently parse the YAML file.
 
 ---
 
