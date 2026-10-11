@@ -78,6 +78,10 @@ func run() error {
 	executor := newCommandExecutor(cfg.Security, log)
 	shellHandler := newShellHandler(validator, executor, log)
 	policyHandler := newPolicyHandler(cfg.Security, log)
+	privileged, err := newPrivilegedHandler(cfg.Security.MaxExecutionTime, cfg.Security.MaxOutputSize, log)
+	if err != nil {
+		return fmt.Errorf("failed to initialize privileged-operation handler: %w", err)
+	}
 
 	s := server.NewMCPServer(
 		cfg.Server.Name,
@@ -113,6 +117,21 @@ func run() error {
 	)
 
 	s.AddTool(allowedCommandsTool, policyHandler.listAllowedCommands)
+
+	requestPrivilegedTool := mcp.NewTool(
+		"request_privileged_operation",
+		mcp.WithDescription("Create an independent, one-shot request for a privileged operation. This initial implementation does not require human approval; execute the returned request_id with execute_privileged_operation. Commands must be a single direct executable invocation, with no shell operators or interpreters. Execution uses MCP_SHELL_SUDO_PASSWORD to authenticate sudo non-interactively."),
+		mcp.WithString("command", mcp.Required(), mcp.Description("One direct command and literal arguments to run through sudo; no shell syntax.")),
+		mcp.WithString("reason", mcp.Description("Short explanation of why the privileged operation is needed.")),
+	)
+	s.AddTool(requestPrivilegedTool, privileged.request)
+
+	executePrivilegedTool := mcp.NewTool(
+		"execute_privileged_operation",
+		mcp.WithDescription("Execute exactly one pending privileged operation created by request_privileged_operation. Each request ID is independent and can be claimed only once; no arbitrary command can be supplied at execution time."),
+		mcp.WithString("request_id", mcp.Required(), mcp.Description("The request_id returned by request_privileged_operation.")),
+	)
+	s.AddTool(executePrivilegedTool, privileged.execute)
 
 	log.Info().Msg("MCP server initialized, serving on stdio")
 

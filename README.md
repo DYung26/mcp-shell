@@ -125,6 +125,18 @@ Response includes `status`, `exit_code`, `stdout`, `stderr`, `command`, `executi
 
 Returns the effective security mode and executable allowlist loaded by the server. It reflects the runtime configuration after defaults and `MCP_SHELL_SEC_CONFIG_FILE` have been applied; it does not independently parse the YAML file.
 
+### `request_privileged_operation`
+
+Creates a unique, independent one-shot request for a privileged operation. Required parameter: `command` (one direct executable invocation with literal arguments); optional `reason`. Shell operators and shell/language interpreters are rejected. Returns a `request_id` that must be passed to `execute_privileged_operation`.
+
+**Important:** this initial implementation intentionally has no human approval step. Anyone able to call the tools can request and execute commands with the service user's sudo privileges. Use only in a trusted environment and configure sudo deliberately. Execution reads `MCP_SHELL_SUDO_PASSWORD` from the service environment and supplies it to `sudo -S` over stdin; the password is not included in command arguments, request records, or tool output. If the variable is missing, execution fails without consuming the pending request. Configure it through a service-scoped, owner-only systemd `EnvironmentFile`; do not commit it or put it in the repository `.env`. Do not configure unrestricted `NOPASSWD: ALL` unless you deliberately accept unrestricted root access for this MCP server.
+
+### `execute_privileged_operation`
+
+Takes only `request_id`; it does not accept a command. Each request is stored separately and atomically claimed before execution, so concurrent callers cannot overwrite one another or execute the same request twice. Commands execute directly without a shell. Results are recorded in the request state directory.
+
+`MCP_SHELL_PRIVILEGED_STATE_DIR` selects the state directory (default: `$XDG_STATE_HOME/mcp-shell/privileged-requests`, or `~/.local/state/mcp-shell/privileged-requests`). It is created with owner-only permissions. This structure is intended to support a future approval service, such as a WhatsApp accept/reject flow, without changing the per-request identity and one-shot execution model.
+
 ---
 
 ## Environment variables
@@ -132,6 +144,8 @@ Returns the effective security mode and executable allowlist loaded by the serve
 | Variable | Description |
 |----------|-------------|
 | `MCP_SHELL_SEC_CONFIG_FILE` | Path to security YAML (overrides built-in secure defaults) |
+| `MCP_SHELL_PRIVILEGED_STATE_DIR` | Directory for independent one-shot privileged-operation request records |
+| `MCP_SHELL_SUDO_PASSWORD` | Sudo password captured at startup and removed from the process environment; required to execute privileged operations |
 | `MCP_SHELL_ALLOW_UNSAFE` | Set `true` to disable all validation and run unrestricted (opt-in) |
 | `MCP_SHELL_SERVER_NAME` | Server name (default: "mcp-shell 🐚") |
 | `MCP_SHELL_LOG_LEVEL` | debug, info, warn, error, fatal |
