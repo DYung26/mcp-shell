@@ -7,10 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -142,22 +139,8 @@ func (e *CommandExecutor) executeSecureCommand(
 	}
 
 	if e.config.RunAsUser != "" {
-		if u, err := user.Lookup(e.config.RunAsUser); err == nil {
-			if uid, err := strconv.Atoi(u.Uid); err == nil {
-				if gid, err := strconv.Atoi(u.Gid); err == nil {
-					cmd.SysProcAttr = &syscall.SysProcAttr{
-						Credential: &syscall.Credential{
-							Uid: uint32(uid),
-							Gid: uint32(gid),
-						},
-					}
-					e.logger.Debug().
-						Str("user", e.config.RunAsUser).
-						Int("uid", uid).
-						Int("gid", gid).
-						Msg("Set process credentials")
-				}
-			}
+		if err := configureRunAsUser(cmd, e.config.RunAsUser, e.logger); err != nil {
+			return nil, fmt.Errorf("configure run_as_user %q: %w", e.config.RunAsUser, err)
 		}
 	}
 
