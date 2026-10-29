@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +22,9 @@ func toolRequest(args map[string]interface{}) mcp.CallToolRequest {
 }
 
 func TestPrivilegedRequestsAreIndependentAndOneShot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a Unix shell script to mock sudo")
+	}
 	stateDir := t.TempDir()
 	t.Setenv("MCP_SHELL_PRIVILEGED_STATE_DIR", stateDir)
 	t.Setenv("MCP_SHELL_SUDO_PASSWORD", "test-password")
