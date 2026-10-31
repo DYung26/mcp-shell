@@ -2,6 +2,8 @@ module github.com/sonirico/mcp-shell
 
 go 1.26
 
+godebug multipathtcp=0
+
 require (
 	github.com/joho/godotenv v1.5.1
 	github.com/mark3labs/mcp-go v0.54.1
