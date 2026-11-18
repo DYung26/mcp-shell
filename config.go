@@ -17,17 +17,18 @@ type Config struct {
 }
 
 type SecurityConfig struct {
-	Enabled            bool          `yaml:"enabled"`
-	AllowedCommands    []string      `yaml:"allowed_commands"`    // Deprecated: use AllowedExecutables
-	BlockedCommands    []string      `yaml:"blocked_commands"`    // Deprecated: use validation instead
-	BlockedPatterns    []string      `yaml:"blocked_patterns"`    // Deprecated: use validation instead
-	AllowedExecutables []string      `yaml:"allowed_executables"` // Secure: list of allowed executable paths
-	MaxExecutionTime   time.Duration `yaml:"max_execution_time"`
-	WorkingDirectory   string        `yaml:"working_directory"`
-	RunAsUser          string        `yaml:"run_as_user"`
-	MaxOutputSize      int           `yaml:"max_output_size"`
-	AuditLog           bool          `yaml:"audit_log"`
-	UseShellExecution  bool          `yaml:"use_shell_execution"` // Legacy mode - enables shell execution (DANGEROUS)
+	Enabled                    bool          `yaml:"enabled"`
+	AllowedCommands            []string      `yaml:"allowed_commands"`    // Deprecated: use AllowedExecutables
+	BlockedCommands            []string      `yaml:"blocked_commands"`    // Deprecated: use validation instead
+	BlockedPatterns            []string      `yaml:"blocked_patterns"`    // Deprecated: use validation instead
+	AllowedExecutables         []string      `yaml:"allowed_executables"` // Secure: list of allowed executable paths
+	MaxExecutionTime           time.Duration `yaml:"max_execution_time"`
+	MaxBackgroundExecutionTime time.Duration `yaml:"max_background_execution_time"`
+	WorkingDirectory           string        `yaml:"working_directory"`
+	RunAsUser                  string        `yaml:"run_as_user"`
+	MaxOutputSize              int           `yaml:"max_output_size"`
+	AuditLog                   bool          `yaml:"audit_log"`
+	UseShellExecution          bool          `yaml:"use_shell_execution"` // Legacy mode - enables shell execution (DANGEROUS)
 }
 
 type ServerConfig struct {
@@ -55,10 +56,11 @@ func newDefaultSecurityConfig() SecurityConfig {
 			"ls", "pwd", "whoami", "date", "echo",
 			"cat", "grep", "find", "wc", "head", "tail", "sort", "uniq",
 		},
-		MaxExecutionTime: 30 * time.Second,
-		MaxOutputSize:    1048576,
-		WorkingDirectory: "/tmp",
-		AuditLog:         true,
+		MaxExecutionTime:           30 * time.Second,
+		MaxBackgroundExecutionTime: 24 * time.Hour,
+		MaxOutputSize:              1048576,
+		WorkingDirectory:           "/tmp",
+		AuditLog:                   true,
 	}
 }
 
@@ -106,17 +108,18 @@ func loadSecurityFromFile(config *Config, filename string) error {
 
 	var yamlConfig struct {
 		Security struct {
-			Enabled            bool     `yaml:"enabled"`
-			AllowedCommands    []string `yaml:"allowed_commands"`
-			BlockedCommands    []string `yaml:"blocked_commands"`
-			BlockedPatterns    []string `yaml:"blocked_patterns"`
-			AllowedExecutables []string `yaml:"allowed_executables"`
-			MaxExecutionTime   string   `yaml:"max_execution_time"`
-			WorkingDirectory   string   `yaml:"working_directory"`
-			RunAsUser          string   `yaml:"run_as_user"`
-			MaxOutputSize      int      `yaml:"max_output_size"`
-			AuditLog           bool     `yaml:"audit_log"`
-			UseShellExecution  bool     `yaml:"use_shell_execution"`
+			Enabled                    bool     `yaml:"enabled"`
+			AllowedCommands            []string `yaml:"allowed_commands"`
+			BlockedCommands            []string `yaml:"blocked_commands"`
+			BlockedPatterns            []string `yaml:"blocked_patterns"`
+			AllowedExecutables         []string `yaml:"allowed_executables"`
+			MaxExecutionTime           string   `yaml:"max_execution_time"`
+			MaxBackgroundExecutionTime string   `yaml:"max_background_execution_time"`
+			WorkingDirectory           string   `yaml:"working_directory"`
+			RunAsUser                  string   `yaml:"run_as_user"`
+			MaxOutputSize              int      `yaml:"max_output_size"`
+			AuditLog                   bool     `yaml:"audit_log"`
+			UseShellExecution          bool     `yaml:"use_shell_execution"`
 		} `yaml:"security"`
 	}
 
@@ -135,6 +138,14 @@ func loadSecurityFromFile(config *Config, filename string) error {
 	config.Security.AuditLog = yamlConfig.Security.AuditLog
 	config.Security.UseShellExecution = yamlConfig.Security.UseShellExecution
 
+	if yamlConfig.Security.MaxBackgroundExecutionTime != "" {
+		duration, err := time.ParseDuration(yamlConfig.Security.MaxBackgroundExecutionTime)
+		if err != nil {
+			return fmt.Errorf("invalid max_background_execution_time: %w", err)
+		}
+		config.Security.MaxBackgroundExecutionTime = duration
+	}
+
 	if yamlConfig.Security.MaxExecutionTime != "" {
 		duration, err := time.ParseDuration(yamlConfig.Security.MaxExecutionTime)
 		if err != nil {
@@ -147,6 +158,10 @@ func loadSecurityFromFile(config *Config, filename string) error {
 }
 
 func validateConfig(config *Config) error {
+	if config.Security.MaxBackgroundExecutionTime < 0 {
+		return fmt.Errorf("max_background_execution_time cannot be negative")
+	}
+
 	if config.Security.MaxOutputSize < 0 {
 		return fmt.Errorf("max_output_size cannot be negative")
 	}

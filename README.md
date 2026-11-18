@@ -64,6 +64,7 @@ security:
   blocked_patterns:          # optional: restrict args on allowed commands
     - '(^|\s)remote\s+(-v|--verbose)(\s|$)'
   max_execution_time: 30s
+  max_background_execution_time: 24h
   max_output_size: 1048576
   working_directory: /tmp/mcp-workspace
   audit_log: true
@@ -118,8 +119,35 @@ For custom config, mount the file and set the env:
 |-----------|------|-------------|
 | `command` | string | Shell command to run (required) |
 | `base64` | boolean | Encode stdout/stderr as base64 (default: false) |
+| `background_after_seconds` | number | Optional 1-300 second handoff threshold. Starts a durable job immediately; returns its final result if it finishes within the threshold, otherwise returns a `job_id`. |
 
-Response includes `status`, `exit_code`, `stdout`, `stderr`, `command`, `execution_time`, and optional `security_info`.
+Response includes `status`, `exit_code`, `stdout`, `stderr`, `command`, `execution_time`, `output_truncated`, and optional `security_info`.
+
+### `shell_run_background`
+
+Starts a command as a detached background job and immediately returns its `job_id`. The command is validated against the same security policy as `shell_exec`.
+
+### `shell_get_job`
+
+Retrieves job status and the next stdout/stderr chunks. Required parameter: `job_id`. Optional `stdout_offset` and `stderr_offset` are byte offsets returned by the previous response; pass them back unchanged to retrieve only new output. Optional `base64` encodes output chunks.
+
+Job states are `queued`, `running`, `succeeded`, `failed`, `cancelled`, and `timed_out`. Results include exit code, error details, timestamps, execution duration, and an output-truncated flag.
+
+### `shell_list_jobs`
+
+Lists retained jobs, newest first, with current or final status.
+
+### `shell_cancel_job`
+
+Cancels a queued or running job. On Unix, command timeouts terminate the command process group; cancellation terminates both command and worker process groups, escalating from TERM to KILL after one second. On Windows, it terminates the direct command and worker processes; descendant-process cleanup is not guaranteed.
+
+### `shell_delete_job`
+
+Deletes a completed job's metadata and stored output. Active jobs must be cancelled first. Use this to reclaim space and keep the retained-job limit available.
+
+Background jobs run in detached worker processes and persist their metadata/output outside the MCP server process. They can continue across an MCP server restart while the host remains running, but are not guaranteed to survive host reboot or power loss. Defaults are 24 hours maximum background runtime, 32 active jobs, and 1,000 retained records. Job data is stored under the user's cache directory in `mcp-shell/jobs`; set `MCP_SHELL_JOB_DIR` to override it. Output is capped per stream by `max_output_size`.
+
+A synchronous `shell_exec` call already in progress cannot be detached after the fact. Use `shell_run_background` from the outset or set `background_after_seconds` when dispatching the command.
 
 ### `list_allowed_commands`
 
@@ -145,6 +173,7 @@ Takes only `request_id`; it does not accept a command. Each request is stored se
 |----------|-------------|
 | `MCP_SHELL_SEC_CONFIG_FILE` | Path to security YAML (overrides built-in secure defaults) |
 | `MCP_SHELL_PRIVILEGED_STATE_DIR` | Directory for independent one-shot privileged-operation request records |
+| `MCP_SHELL_JOB_DIR` | Directory for background job metadata and stdout/stderr output |
 | `MCP_SHELL_SUDO_PASSWORD` | Sudo password captured at startup and removed from the process environment; required to execute privileged operations |
 | `MCP_SHELL_ALLOW_UNSAFE` | Set `true` to disable all validation and run unrestricted (opt-in) |
 | `MCP_SHELL_SERVER_NAME` | Server name (default: "mcp-shell 🐚") |
