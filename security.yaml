@@ -41,6 +41,7 @@ security:
   
   # Execution limits
   max_execution_time: "30s"
+  max_background_execution_time: "24h"
   max_output_size: 1048576  # 1MB
   
   # Security context

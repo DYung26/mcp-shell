@@ -10,6 +10,26 @@ import (
 
 var version = "dev"
 
+func init() {
+	if os.Getenv("MCP_SHELL_JOB_WORKER") != "1" {
+		return
+	}
+	config, err := loadConfig()
+	if err != nil {
+		os.Exit(2)
+	}
+	logger, err := newLogger(config.Logging)
+	if err != nil {
+		os.Exit(2)
+	}
+	manager := newJobManager(config.Security, logger)
+	if err := manager.runWorker(os.Getenv("MCP_SHELL_JOB_ID")); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -92,12 +112,13 @@ func run() error {
 	shellTool := mcp.NewTool(
 		"shell_exec",
 		mcp.WithDescription(
-			"Execute shell commands with configurable security constraints. Returns structured JSON with stdout, stderr, exit code and execution metadata.",
+			"Execute a command synchronously with max_execution_time. Set background_after_seconds to run it as a durable job and return a job_id if it has not completed by that threshold.",
 		),
 		mcp.WithString("command",
 			mcp.Required(),
 			mcp.Description("Shell command to execute"),
 		),
+		mcp.WithNumber("background_after_seconds", mcp.Description("Optional handoff threshold. Execute as a durable background job and wait this many seconds; if still running, return its job_id and current output.")),
 		mcp.WithBoolean(
 			"base64",
 			mcp.DefaultBool(false),
@@ -108,6 +129,43 @@ func run() error {
 	)
 
 	s.AddTool(shellTool, shellHandler.handle)
+
+	backgroundTool := mcp.NewTool(
+		"shell_run_background",
+		mcp.WithDescription("Start a command as a durable background job and return immediately with its job_id. Use shell_get_job to retrieve status and incremental output."),
+		mcp.WithString("command", mcp.Required(), mcp.Description("Command to execute under the configured shell security policy.")),
+	)
+	s.AddTool(backgroundTool, shellHandler.runBackground)
+
+	getJobTool := mcp.NewTool(
+		"shell_get_job",
+		mcp.WithDescription("Get a background job's status and the next output chunk. Pass returned offsets to retrieve subsequent chunks."),
+		mcp.WithString("job_id", mcp.Required(), mcp.Description("Job ID returned by shell_run_background or shell_exec handoff.")),
+		mcp.WithNumber("stdout_offset", mcp.Description("Byte offset for the next stdout chunk; default 0.")),
+		mcp.WithNumber("stderr_offset", mcp.Description("Byte offset for the next stderr chunk; default 0.")),
+		mcp.WithBoolean("base64", mcp.DefaultBool(false), mcp.Description("Base64-encode returned output chunks.")),
+	)
+	s.AddTool(getJobTool, shellHandler.getJob)
+
+	listJobsTool := mcp.NewTool(
+		"shell_list_jobs",
+		mcp.WithDescription("List retained background jobs, newest first, including their current or final status."),
+	)
+	s.AddTool(listJobsTool, shellHandler.listJobs)
+
+	cancelJobTool := mcp.NewTool(
+		"shell_cancel_job",
+		mcp.WithDescription("Cancel a queued or running background job. On Unix, command and worker process groups are terminated; Windows targets the direct processes."),
+		mcp.WithString("job_id", mcp.Required(), mcp.Description("Job ID to cancel.")),
+	)
+	s.AddTool(cancelJobTool, shellHandler.cancelJob)
+
+	deleteJobTool := mcp.NewTool(
+		"shell_delete_job",
+		mcp.WithDescription("Delete a completed background job and its stored output. Active jobs must be cancelled first."),
+		mcp.WithString("job_id", mcp.Required(), mcp.Description("Completed job ID to delete.")),
+	)
+	s.AddTool(deleteJobTool, shellHandler.deleteJob)
 
 	allowedCommandsTool := mcp.NewTool(
 		"list_allowed_commands",

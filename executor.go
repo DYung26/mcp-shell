@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,13 +15,14 @@ import (
 )
 
 type ExecutionResult struct {
-	Status        string        `json:"status"`
-	ExitCode      int           `json:"exit_code"`
-	Stdout        string        `json:"stdout"`
-	Stderr        string        `json:"stderr"`
-	Command       string        `json:"command"`
-	ExecutionTime time.Duration `json:"execution_time"`
-	SecurityInfo  *SecurityInfo `json:"security_info,omitempty"`
+	Status          string        `json:"status"`
+	ExitCode        int           `json:"exit_code"`
+	Stdout          string        `json:"stdout"`
+	Stderr          string        `json:"stderr"`
+	Command         string        `json:"command"`
+	ExecutionTime   time.Duration `json:"execution_time"`
+	OutputTruncated bool          `json:"output_truncated"`
+	SecurityInfo    *SecurityInfo `json:"security_info,omitempty"`
 }
 
 type SecurityInfo struct {
@@ -101,6 +103,31 @@ func (e *CommandExecutor) executeSecureCommand(
 	command string,
 	useBase64 bool,
 ) (*ExecutionResult, error) {
+	var stdoutBuf, stderrBuf bytes.Buffer
+	result, err := e.executeSecureCommandTo(ctx, command, &stdoutBuf, &stderrBuf, nil)
+	if err != nil {
+		return nil, err
+	}
+	if result.OutputTruncated {
+		return nil, fmt.Errorf("command output exceeds maximum size limit")
+	}
+	if useBase64 {
+		result.Stdout = base64.StdEncoding.EncodeToString(stdoutBuf.Bytes())
+		result.Stderr = base64.StdEncoding.EncodeToString(stderrBuf.Bytes())
+	} else {
+		result.Stdout = strings.TrimRight(stdoutBuf.String(), "\n")
+		result.Stderr = strings.TrimRight(stderrBuf.String(), "\n")
+	}
+	return result, nil
+}
+
+func (e *CommandExecutor) executeSecureCommandTo(
+	ctx context.Context,
+	command string,
+	stdout io.Writer,
+	stderr io.Writer,
+	onStart func(pid int) error,
+) (*ExecutionResult, error) {
 	var cmd *exec.Cmd
 
 	// Use secure execution unless legacy shell mode is explicitly enabled
@@ -144,27 +171,30 @@ func (e *CommandExecutor) executeSecureCommand(
 		}
 	}
 
-	var stdoutBuf, stderrBuf bytes.Buffer
-	cmd.Stdout = &stdoutBuf
-	cmd.Stderr = &stderrBuf
+	limitedStdout := newLimitedWriter(stdout, e.config.MaxOutputSize)
+	limitedStderr := newLimitedWriter(stderr, e.config.MaxOutputSize)
+	cmd.Stdout = limitedStdout
+	cmd.Stderr = limitedStderr
 
-	err := cmd.Run()
+	configureCommandProcess(cmd)
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		return terminateCommandProcess(cmd.Process.Pid)
+	}
+	cmd.WaitDelay = 2 * time.Second
 
-	if e.config.MaxOutputSize > 0 {
-		if stdoutBuf.Len() > e.config.MaxOutputSize {
-			e.logger.Warn().
-				Int("stdout_size", stdoutBuf.Len()).
-				Int("max_size", e.config.MaxOutputSize).
-				Msg("Stdout exceeds maximum size limit")
-			return nil, fmt.Errorf("stdout exceeds maximum size limit")
+	err := cmd.Start()
+	if err == nil {
+		if onStart != nil {
+			if callbackErr := onStart(cmd.Process.Pid); callbackErr != nil {
+				_ = terminateCommandProcess(cmd.Process.Pid)
+				_ = cmd.Wait()
+				return nil, fmt.Errorf("persist command process state: %w", callbackErr)
+			}
 		}
-		if stderrBuf.Len() > e.config.MaxOutputSize {
-			e.logger.Warn().
-				Int("stderr_size", stderrBuf.Len()).
-				Int("max_size", e.config.MaxOutputSize).
-				Msg("Stderr exceeds maximum size limit")
-			return nil, fmt.Errorf("stderr exceeds maximum size limit")
-		}
+		err = cmd.Wait()
 	}
 
 	exitCode := 0
@@ -178,20 +208,45 @@ func (e *CommandExecutor) executeSecureCommand(
 		}
 	}
 
-	var stdout, stderr string
-	if useBase64 {
-		stdout = base64.StdEncoding.EncodeToString(stdoutBuf.Bytes())
-		stderr = base64.StdEncoding.EncodeToString(stderrBuf.Bytes())
-	} else {
-		stdout = strings.TrimRight(stdoutBuf.String(), "\n")
-		stderr = strings.TrimRight(stderrBuf.String(), "\n")
-	}
-
 	return &ExecutionResult{
-		Status:   status,
-		ExitCode: exitCode,
-		Stdout:   stdout,
-		Stderr:   stderr,
-		Command:  command,
+		Status:          status,
+		ExitCode:        exitCode,
+		Command:         command,
+		OutputTruncated: limitedStdout.truncated || limitedStderr.truncated,
 	}, nil
+}
+
+type limitedWriter struct {
+	writer    io.Writer
+	limit     int
+	written   int
+	truncated bool
+}
+
+func newLimitedWriter(writer io.Writer, limit int) *limitedWriter {
+	return &limitedWriter{writer: writer, limit: limit}
+}
+
+func (w *limitedWriter) Write(data []byte) (int, error) {
+	if w.limit <= 0 {
+		n, err := w.writer.Write(data)
+		w.written += n
+		return n, err
+	}
+	remaining := w.limit - w.written
+	if remaining <= 0 {
+		w.truncated = true
+		return len(data), nil
+	}
+	if len(data) > remaining {
+		w.truncated = true
+		if _, err := w.writer.Write(data[:remaining]); err != nil {
+			return 0, err
+		}
+		w.written += remaining
+		return len(data), nil
+	}
+	n, err := w.writer.Write(data)
+	w.written += n
+	return n, err
 }
