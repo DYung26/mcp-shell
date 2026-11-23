@@ -112,13 +112,13 @@ func run() error {
 	shellTool := mcp.NewTool(
 		"shell_exec",
 		mcp.WithDescription(
-			"Execute a command synchronously with max_execution_time. Set background_after_seconds to run it as a durable job and return a job_id if it has not completed by that threshold.",
+			"Execute a command and wait synchronously for up to 20 seconds by default. If it is still running, return a durable job_id and current output; use shell_get_job to continue retrieving output.",
 		),
 		mcp.WithString("command",
 			mcp.Required(),
 			mcp.Description("Shell command to execute"),
 		),
-		mcp.WithNumber("background_after_seconds", mcp.Description("Optional handoff threshold. Execute as a durable background job and wait this many seconds; if still running, return its job_id and current output.")),
+		mcp.WithNumber("background_after_seconds", mcp.Description("Handoff threshold in seconds (default 20, maximum 300). Return the command result if it finishes within this period; otherwise return a job_id and current output.")),
 		mcp.WithBoolean(
 			"base64",
 			mcp.DefaultBool(false),
@@ -149,7 +149,11 @@ func run() error {
 
 	listJobsTool := mcp.NewTool(
 		"shell_list_jobs",
-		mcp.WithDescription("List retained background jobs, newest first, including their current or final status."),
+		mcp.WithDescription("List retained background jobs, newest first. Results are paginated and can be filtered by status or command text."),
+		mcp.WithNumber("limit", mcp.Description("Number of jobs to return (default 25, maximum 100).")),
+		mcp.WithNumber("offset", mcp.Description("Number of matching jobs to skip (default 0).")),
+		mcp.WithString("status", mcp.Description("Optional exact status filter: queued, running, succeeded, failed, cancelled, or timed_out.")),
+		mcp.WithString("command_contains", mcp.Description("Optional case-insensitive substring filter for the command.")),
 	)
 	s.AddTool(listJobsTool, shellHandler.listJobs)
 

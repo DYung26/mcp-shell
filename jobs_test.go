@@ -25,7 +25,7 @@ func TestJobManager_startRunsDurableWorkerAndRetrievesResult(t *testing.T) {
 	logger := zerolog.New(zerolog.NewTestWriter(t))
 	manager := newJobManager(SecurityConfig{Enabled: true, AllowedExecutables: []string{"echo", "sleep"}, MaxBackgroundExecutionTime: 5 * time.Second, MaxOutputSize: 1024}, logger)
 
-	job, err := manager.start("echo background-ok")
+	job, err := manager.start("echo background-ok", 0)
 	require.NoError(t, err)
 	job, err = manager.wait(context.Background(), job.ID, 5*time.Second)
 	require.NoError(t, err)
@@ -45,7 +45,7 @@ func TestJobManager_cancelTerminatesRunningWorker(t *testing.T) {
 	logger := zerolog.New(zerolog.NewTestWriter(t))
 	manager := newJobManager(SecurityConfig{Enabled: true, AllowedExecutables: []string{"echo", "sleep"}, MaxBackgroundExecutionTime: 5 * time.Second, MaxOutputSize: 1024}, logger)
 
-	job, err := manager.start("sleep 30")
+	job, err := manager.start("sleep 30", 0)
 	require.NoError(t, err)
 	job, err = manager.cancel(job.ID)
 	require.NoError(t, err)
@@ -80,6 +80,34 @@ func TestJobManager_runWorkerPersistsOutputAndStatus(t *testing.T) {
 	require.NotNil(t, record.FinishedAt)
 }
 
+func TestJobManager_runWorkerUsesJobExecutionTimeout(t *testing.T) {
+	manager := &JobManager{
+		root: t.TempDir(),
+		config: SecurityConfig{
+			Enabled:                    true,
+			AllowedExecutables:         []string{"sleep"},
+			MaxBackgroundExecutionTime: 5 * time.Second,
+		},
+		logger: zerolog.New(zerolog.NewTestWriter(t)),
+	}
+	job := &JobRecord{
+		ID:               "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f0",
+		Command:          "sleep 1",
+		Status:           jobQueued,
+		CreatedAt:        time.Now().UTC(),
+		ExecutionTimeout: 100 * time.Millisecond,
+	}
+	require.NoError(t, manager.write(job))
+	t.Setenv("MCP_SHELL_JOB_COMMAND", base64.StdEncoding.EncodeToString([]byte(job.Command)))
+
+	require.NoError(t, manager.runWorker(job.ID))
+
+	record, _, err := manager.get(job.ID, 0, 0, false)
+	require.NoError(t, err)
+	require.Equal(t, jobTimedOut, record.Status)
+	require.Equal(t, 100*time.Millisecond, record.ExecutionTimeout)
+}
+
 func TestJobManager_getReturnsIncrementalOutput(t *testing.T) {
 	manager := &JobManager{root: t.TempDir()}
 	job := &JobRecord{ID: "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f0", Status: jobRunning, CreatedAt: time.Now().UTC()}
@@ -93,6 +121,61 @@ func TestJobManager_getReturnsIncrementalOutput(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "second-third", second.Stdout)
 	require.Equal(t, int64(18), second.StdoutOffset)
+}
+
+func TestJobManager_getCompleteReturnsAllOutput(t *testing.T) {
+	manager := &JobManager{root: t.TempDir()}
+	job := &JobRecord{
+		ID:        "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f0",
+		Status:    jobSucceeded,
+		CreatedAt: time.Now().UTC(),
+	}
+	require.NoError(t, manager.write(job))
+
+	stdout := strings.Repeat("a", 600*1024)
+	stderr := strings.Repeat("b", 300*1024)
+	require.NoError(t, os.WriteFile(filepath.Join(manager.dir(job.ID), "stdout"), []byte(stdout), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(manager.dir(job.ID), "stderr"), []byte(stderr), 0600))
+
+	_, output, err := manager.getComplete(job.ID, false)
+	require.NoError(t, err)
+	require.Equal(t, stdout, output.Stdout)
+	require.Equal(t, stderr, output.Stderr)
+	require.Equal(t, int64(len(stdout)), output.StdoutOffset)
+	require.Equal(t, int64(len(stderr)), output.StderrOffset)
+}
+
+func TestJobManager_listPageFiltersAndPaginates(t *testing.T) {
+	manager := &JobManager{root: t.TempDir()}
+	createdAt := time.Now().UTC()
+	jobs := []*JobRecord{
+		{ID: "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f0", Command: "go test ./...", Status: jobSucceeded, CreatedAt: createdAt},
+		{ID: "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f1", Command: "git status", Status: jobFailed, CreatedAt: createdAt.Add(-time.Minute)},
+		{ID: "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f2", Command: "go test ./pkg", Status: jobSucceeded, CreatedAt: createdAt.Add(-2 * time.Minute)},
+		{ID: "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f3", Command: "go build", Status: jobSucceeded, CreatedAt: createdAt.Add(-3 * time.Minute)},
+	}
+	for _, job := range jobs {
+		require.NoError(t, manager.write(job))
+	}
+
+	page, err := manager.listPage(jobListOptions{
+		Limit:           1,
+		Offset:          1,
+		Status:          jobSucceeded,
+		CommandContains: "GO TEST",
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, page.Total)
+	require.Equal(t, 1, page.Limit)
+	require.Equal(t, int64(1), page.Offset)
+	require.False(t, page.HasMore)
+	require.Len(t, page.Jobs, 1)
+	require.Equal(t, jobs[2].ID, page.Jobs[0].ID)
+
+	emptyPage, err := manager.listPage(jobListOptions{Limit: 25, Offset: 10})
+	require.NoError(t, err)
+	require.Empty(t, emptyPage.Jobs)
+	require.Equal(t, 4, emptyPage.Total)
 }
 
 func TestJobManager_rejectsInvalidJobIDsAndOffsets(t *testing.T) {

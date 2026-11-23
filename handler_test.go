@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,7 +14,152 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestBackgroundHandoffSecondsDefaultsAndValidates(t *testing.T) {
+	tests := []struct {
+		name      string
+		arguments map[string]interface{}
+		want      int
+		wantError bool
+	}{
+		{name: "default threshold", arguments: map[string]interface{}{}, want: defaultBackgroundHandoffSeconds},
+		{name: "custom threshold", arguments: map[string]interface{}{"background_after_seconds": float64(5)}, want: 5},
+		{name: "zero is rejected", arguments: map[string]interface{}{"background_after_seconds": float64(0)}, wantError: true},
+		{name: "fraction is rejected", arguments: map[string]interface{}{"background_after_seconds": 1.5}, wantError: true},
+		{name: "values above maximum are rejected", arguments: map[string]interface{}{"background_after_seconds": float64(maxBackgroundHandoffSeconds + 1)}, wantError: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := backgroundHandoffSeconds(test.arguments)
+			if test.wantError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, test.want, got)
+		})
+	}
+}
+
+func TestShellHandler_handleAppliesConfiguredExecutionTimeout(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "security.yaml")
+	configData := []byte("security:\n  enabled: true\n  use_shell_execution: false\n  allowed_executables: [sleep]\n  max_execution_time: 100ms\n  max_background_execution_time: 5s\n  working_directory: /tmp\n")
+	require.NoError(t, os.WriteFile(configPath, configData, 0600))
+	t.Setenv("MCP_SHELL_JOB_DIR", filepath.Join(root, "jobs"))
+	t.Setenv("MCP_SHELL_SEC_CONFIG_FILE", configPath)
+
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+	config := SecurityConfig{
+		Enabled:                    true,
+		AllowedExecutables:         []string{"sleep"},
+		MaxExecutionTime:           100 * time.Millisecond,
+		MaxBackgroundExecutionTime: 5 * time.Second,
+	}
+	handler := newShellHandler(
+		newSecurityValidator(config, logger),
+		newCommandExecutor(config, logger),
+		logger,
+	)
+	request := mcp.CallToolRequest{}
+	request.Params.Arguments = map[string]interface{}{
+		"command":                  "sleep 1",
+		"background_after_seconds": float64(2),
+	}
+
+	result, err := handler.handle(context.Background(), request)
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	require.Contains(t, result.Content[0].(mcp.TextContent).Text, "execution exceeded 100ms")
+	entries, err := os.ReadDir(filepath.Join(root, "jobs"))
+	require.NoError(t, err)
+	require.Empty(t, entries)
+}
+
+func TestShellHandler_handleHandsOffLongRunningCommand(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "security.yaml")
+	configData := []byte("security:\n  enabled: true\n  use_shell_execution: false\n  allowed_executables: [sleep]\n  max_execution_time: 5s\n  max_background_execution_time: 10s\n  max_output_size: 1024\n  working_directory: /tmp\n")
+	require.NoError(t, os.WriteFile(configPath, configData, 0600))
+	t.Setenv("MCP_SHELL_JOB_DIR", filepath.Join(root, "jobs"))
+	t.Setenv("MCP_SHELL_SEC_CONFIG_FILE", configPath)
+
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+	config := SecurityConfig{
+		Enabled:                    true,
+		AllowedExecutables:         []string{"sleep"},
+		MaxExecutionTime:           5 * time.Second,
+		MaxBackgroundExecutionTime: 10 * time.Second,
+		MaxOutputSize:              1024,
+		WorkingDirectory:           "/tmp",
+	}
+	handler := newShellHandler(
+		newSecurityValidator(config, logger),
+		newCommandExecutor(config, logger),
+		logger,
+	)
+	request := mcp.CallToolRequest{}
+	request.Params.Arguments = map[string]interface{}{
+		"command":                  "sleep 2",
+		"background_after_seconds": float64(1),
+	}
+
+	result, err := handler.handle(context.Background(), request)
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	var response map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &response))
+	require.Equal(t, true, response["handed_off"])
+	job := response["job"].(map[string]interface{})
+	jobID := job["job_id"].(string)
+	require.NotEmpty(t, jobID)
+
+	completed, err := handler.jobs.wait(context.Background(), jobID, 3*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, jobSucceeded, completed.Status)
+	_, output, err := handler.jobs.getComplete(jobID, false)
+	require.NoError(t, err)
+	require.Empty(t, output.Stdout)
+	require.NoError(t, handler.jobs.delete(jobID))
+}
+
+func TestShellHandler_listJobsReturnsFilteredPage(t *testing.T) {
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+	manager := &JobManager{root: t.TempDir(), logger: logger}
+	handler := &ShellHandler{jobs: manager}
+	createdAt := time.Now().UTC()
+	jobs := []*JobRecord{
+		{ID: "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f0", Command: "go test ./...", Status: jobSucceeded, CreatedAt: createdAt},
+		{ID: "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f1", Command: "git status", Status: jobFailed, CreatedAt: createdAt.Add(-time.Minute)},
+		{ID: "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f2", Command: "go test ./pkg", Status: jobSucceeded, CreatedAt: createdAt.Add(-2 * time.Minute)},
+	}
+	for _, job := range jobs {
+		require.NoError(t, manager.write(job))
+	}
+
+	request := mcp.CallToolRequest{}
+	request.Params.Arguments = map[string]interface{}{
+		"limit":            float64(1),
+		"offset":           float64(0),
+		"status":           jobSucceeded,
+		"command_contains": "go test",
+	}
+	result, err := handler.listJobs(context.Background(), request)
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	var page jobListResult
+	require.NoError(t, json.Unmarshal([]byte(result.Content[0].(mcp.TextContent).Text), &page))
+	require.Equal(t, 2, page.Total)
+	require.Equal(t, 1, page.Limit)
+	require.True(t, page.HasMore)
+	require.Len(t, page.Jobs, 1)
+	require.Equal(t, jobs[0].ID, page.Jobs[0].ID)
+}
+
 func TestShellHandler_handle_secure_mode(t *testing.T) {
+	t.Setenv("MCP_SHELL_JOB_DIR", t.TempDir())
 	logger := zerolog.New(zerolog.NewTestWriter(t))
 	ctx := context.Background()
 
@@ -103,6 +251,7 @@ func TestShellHandler_handle_secure_mode(t *testing.T) {
 }
 
 func TestShellHandler_vulnerability_prevention_integration(t *testing.T) {
+	t.Setenv("MCP_SHELL_JOB_DIR", t.TempDir())
 	logger := zerolog.New(zerolog.NewTestWriter(t))
 	ctx := context.Background()
 
@@ -132,6 +281,10 @@ func TestShellHandler_vulnerability_prevention_integration(t *testing.T) {
 	})
 
 	t.Run("legacy_mode_vulnerable_without_blocks", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "security.yaml")
+		configData := []byte("security:\n  enabled: true\n  use_shell_execution: true\n  max_execution_time: 1s\n")
+		require.NoError(t, os.WriteFile(configPath, configData, 0600))
+		t.Setenv("MCP_SHELL_SEC_CONFIG_FILE", configPath)
 		config := SecurityConfig{
 			Enabled:           true,
 			UseShellExecution: true,
@@ -152,6 +305,10 @@ func TestShellHandler_vulnerability_prevention_integration(t *testing.T) {
 	})
 
 	t.Run("legacy_mode_with_proper_blocks", func(t *testing.T) {
+		configPath := filepath.Join(t.TempDir(), "security.yaml")
+		configData := []byte("security:\n  enabled: true\n  use_shell_execution: true\n  max_execution_time: 1s\n  blocked_commands:\n    - chmod\n")
+		require.NoError(t, os.WriteFile(configPath, configData, 0600))
+		t.Setenv("MCP_SHELL_SEC_CONFIG_FILE", configPath)
 		config := SecurityConfig{
 			Enabled:           true,
 			UseShellExecution: true,
@@ -172,6 +329,7 @@ func TestShellHandler_vulnerability_prevention_integration(t *testing.T) {
 }
 
 func TestShellHandler_base64_encoding(t *testing.T) {
+	t.Setenv("MCP_SHELL_JOB_DIR", t.TempDir())
 	logger := zerolog.New(zerolog.NewTestWriter(t))
 	ctx := context.Background()
 

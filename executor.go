@@ -14,6 +14,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const defaultCommandExecutionTimeout = 30 * time.Second
+
 type ExecutionResult struct {
 	Status          string        `json:"status"`
 	ExitCode        int           `json:"exit_code"`
@@ -58,7 +60,7 @@ func (e *CommandExecutor) execute(
 		Bool("base64", useBase64).
 		Msg("Executing command")
 
-	timeout := 30 * time.Second
+	timeout := defaultCommandExecutionTimeout
 	if e.config.MaxExecutionTime > 0 {
 		timeout = e.config.MaxExecutionTime
 	}
