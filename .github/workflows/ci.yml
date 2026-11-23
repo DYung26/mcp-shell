@@ -4,6 +4,7 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,3 +29,16 @@ jobs:
 
       - name: Test
         run: go test -race ./...
+
+      - name: Build Linux deployment binary
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-X main.version=${GITHUB_SHA} -s -w" -o dist/mcp-shell .
+
+      - name: Upload Linux deployment binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-shell-linux-amd64
+          path: dist/mcp-shell
+          if-no-files-found: error
+          retention-days: 7
