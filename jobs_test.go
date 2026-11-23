@@ -5,9 +5,12 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -33,6 +36,13 @@ func TestJobManager_startRunsDurableWorkerAndRetrievesResult(t *testing.T) {
 	_, output, err := manager.get(job.ID, 0, 0, false)
 	require.NoError(t, err)
 	require.Contains(t, output.Stdout, "background-ok")
+	pidBytes, err := os.ReadFile(filepath.Join(manager.dir(job.ID), "pid"))
+	require.NoError(t, err)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+	}, time.Second, 10*time.Millisecond)
 }
 
 func TestJobManager_cancelTerminatesRunningWorker(t *testing.T) {
