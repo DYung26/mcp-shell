@@ -119,7 +119,7 @@ For custom config, mount the file and set the env:
 |-----------|------|-------------|
 | `command` | string | Shell command to run (required) |
 | `base64` | boolean | Encode stdout/stderr as base64 (default: false) |
-| `background_after_seconds` | number | Optional 1-300 second handoff threshold. Starts a durable job immediately; returns its final result if it finishes within the threshold, otherwise returns a `job_id`. |
+| `background_after_seconds` | number | Handoff threshold in seconds (default 20, range 1-300). The call waits for the command result up to this threshold, then returns a `job_id` and current output if it is still running. |
 
 Response includes `status`, `exit_code`, `stdout`, `stderr`, `command`, `execution_time`, `output_truncated`, and optional `security_info`.
 
@@ -135,7 +135,7 @@ Job states are `queued`, `running`, `succeeded`, `failed`, `cancelled`, and `tim
 
 ### `shell_list_jobs`
 
-Lists retained jobs, newest first, with current or final status.
+Lists retained jobs, newest first. Optional `limit` (default 25, maximum 100), `offset`, `status`, and case-insensitive `command_contains` filters are supported. The response includes `total`, `limit`, `offset`, and `has_more`.
 
 ### `shell_cancel_job`
 
@@ -147,7 +147,7 @@ Deletes a completed job's metadata and stored output. Active jobs must be cancel
 
 Background jobs run in detached worker processes and persist their metadata/output outside the MCP server process. They can continue across an MCP server restart while the host remains running, but are not guaranteed to survive host reboot or power loss. Defaults are 24 hours maximum background runtime, 32 active jobs, and 1,000 retained records. Job data is stored under the user's cache directory in `mcp-shell/jobs`; set `MCP_SHELL_JOB_DIR` to override it. Output is capped per stream by `max_output_size`.
 
-A synchronous `shell_exec` call already in progress cannot be detached after the fact. Use `shell_run_background` from the outset or set `background_after_seconds` when dispatching the command.
+`shell_exec` waits synchronously for up to 20 seconds by default (or the configured `background_after_seconds` threshold). If the command is still running, it returns the durable job ID and current output; use `shell_get_job` to continue retrieving output. Jobs that finish before handoff are removed after their result is collected, so only handed-off jobs consume retained-job capacity. Use `shell_run_background` when you want the job ID immediately.
 
 ### `list_allowed_commands`
 

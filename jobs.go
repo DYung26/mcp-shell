@@ -44,6 +44,7 @@ type JobRecord struct {
 	StartedAt         *time.Time    `json:"started_at,omitempty"`
 	FinishedAt        *time.Time    `json:"finished_at,omitempty"`
 	ExecutionDuration time.Duration `json:"execution_duration,omitempty"`
+	ExecutionTimeout  time.Duration `json:"execution_timeout,omitempty"`
 }
 
 type JobOutput struct {
@@ -51,6 +52,28 @@ type JobOutput struct {
 	Stderr       string `json:"stderr"`
 	StdoutOffset int64  `json:"stdout_offset"`
 	StderrOffset int64  `json:"stderr_offset"`
+}
+
+type jobRetentionPolicy uint8
+
+const (
+	jobRetentionStrict jobRetentionPolicy = iota
+	jobRetentionAllowSingleOverflow
+)
+
+type jobListOptions struct {
+	Limit           int
+	Offset          int64
+	Status          string
+	CommandContains string
+}
+
+type jobListResult struct {
+	Jobs    []*JobRecord `json:"jobs"`
+	Total   int          `json:"total"`
+	Limit   int          `json:"limit"`
+	Offset  int64        `json:"offset"`
+	HasMore bool         `json:"has_more"`
 }
 
 type JobManager struct {
@@ -75,7 +98,15 @@ func newJobManager(config SecurityConfig, logger zerolog.Logger) *JobManager {
 	return &JobManager{root: root, config: config, logger: logger.With().Str("component", "jobs").Logger()}
 }
 
-func (m *JobManager) start(command string) (*JobRecord, error) {
+func (m *JobManager) start(command string, executionTimeout time.Duration) (*JobRecord, error) {
+	return m.startWithRetentionPolicy(command, executionTimeout, jobRetentionStrict)
+}
+
+func (m *JobManager) startShellExec(command string, executionTimeout time.Duration) (*JobRecord, error) {
+	return m.startWithRetentionPolicy(command, executionTimeout, jobRetentionAllowSingleOverflow)
+}
+
+func (m *JobManager) startWithRetentionPolicy(command string, executionTimeout time.Duration, retentionPolicy jobRetentionPolicy) (*JobRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := os.MkdirAll(m.root, 0700); err != nil {
@@ -94,12 +125,12 @@ func (m *JobManager) start(command string) (*JobRecord, error) {
 	if active >= maxActiveJobs {
 		return nil, fmt.Errorf("background job limit reached (%d active)", maxActiveJobs)
 	}
-	if len(records) >= maxRetainedJobs {
+	if len(records) >= maxRetainedJobs && (retentionPolicy != jobRetentionAllowSingleOverflow || len(records) > maxRetainedJobs) {
 		return nil, fmt.Errorf("job retention limit reached; remove old records from %s", m.root)
 	}
 
 	id := uuid.NewString()
-	job := &JobRecord{ID: id, Command: command, Status: jobQueued, CreatedAt: time.Now().UTC()}
+	job := &JobRecord{ID: id, Command: command, Status: jobQueued, CreatedAt: time.Now().UTC(), ExecutionTimeout: executionTimeout}
 	if err := m.write(job); err != nil {
 		return nil, err
 	}
@@ -155,6 +186,38 @@ func (m *JobManager) get(id string, stdoutOffset, stderrOffset int64, useBase64 
 	return job, &JobOutput{Stdout: stdout, Stderr: stderr, StdoutOffset: nextStdout, StderrOffset: nextStderr}, nil
 }
 
+func (m *JobManager) getComplete(id string, useBase64 bool) (*JobRecord, *JobOutput, error) {
+	if err := validateJobID(id); err != nil {
+		return nil, nil, err
+	}
+	job, err := m.read(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	job, err = m.reconcile(job)
+	if err != nil {
+		return nil, nil, err
+	}
+	stdout, stdoutOffset, err := readCompleteJobOutput(filepath.Join(m.dir(id), "stdout"))
+	if err != nil {
+		return nil, nil, err
+	}
+	stderr, stderrOffset, err := readCompleteJobOutput(filepath.Join(m.dir(id), "stderr"))
+	if err != nil {
+		return nil, nil, err
+	}
+	if useBase64 {
+		stdout = base64.StdEncoding.EncodeToString([]byte(stdout))
+		stderr = base64.StdEncoding.EncodeToString([]byte(stderr))
+	}
+	return job, &JobOutput{
+		Stdout:       stdout,
+		Stderr:       stderr,
+		StdoutOffset: stdoutOffset,
+		StderrOffset: stderrOffset,
+	}, nil
+}
+
 func (m *JobManager) list() ([]*JobRecord, error) {
 	entries, err := os.ReadDir(m.root)
 	if errors.Is(err, os.ErrNotExist) {
@@ -180,6 +243,43 @@ func (m *JobManager) list() ([]*JobRecord, error) {
 	}
 	sort.Slice(jobs, func(i, j int) bool { return jobs[i].CreatedAt.After(jobs[j].CreatedAt) })
 	return jobs, nil
+}
+
+func (m *JobManager) listPage(options jobListOptions) (*jobListResult, error) {
+	jobs, err := m.list()
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]*JobRecord, 0, len(jobs))
+	commandFilter := strings.ToLower(options.CommandContains)
+	for _, job := range jobs {
+		if options.Status != "" && job.Status != options.Status {
+			continue
+		}
+		if commandFilter != "" && !strings.Contains(strings.ToLower(job.Command), commandFilter) {
+			continue
+		}
+		filtered = append(filtered, job)
+	}
+
+	total := len(filtered)
+	start := options.Offset
+	if start > int64(total) {
+		start = int64(total)
+	}
+	end := start + int64(options.Limit)
+	if end > int64(total) {
+		end = int64(total)
+	}
+
+	return &jobListResult{
+		Jobs:    filtered[int(start):int(end)],
+		Total:   total,
+		Limit:   options.Limit,
+		Offset:  options.Offset,
+		HasMore: end < int64(total),
+	}, nil
 }
 
 func (m *JobManager) cancel(id string) (*JobRecord, error) {
@@ -332,7 +432,10 @@ func (m *JobManager) runWorker(id string) error {
 	}
 	defer errout.Close()
 
-	timeout := m.config.MaxBackgroundExecutionTime
+	timeout := job.ExecutionTimeout
+	if timeout <= 0 {
+		timeout = m.config.MaxBackgroundExecutionTime
+	}
 	if timeout <= 0 {
 		timeout = 24 * time.Hour
 	}
@@ -464,6 +567,17 @@ func readJobOutput(path string, offset int64) (string, int64, error) {
 		return "", 0, err
 	}
 	return string(data[:n]), offset + int64(n), nil
+}
+
+func readCompleteJobOutput(path string) (string, int64, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", 0, nil
+	}
+	if err != nil {
+		return "", 0, err
+	}
+	return string(data), int64(len(data)), nil
 }
 
 func validateJobID(id string) error {
