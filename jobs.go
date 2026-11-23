@@ -148,13 +148,18 @@ func (m *JobManager) startWithRetentionPolicy(command string, executionTimeout t
 		_ = m.write(job)
 		return nil, fmt.Errorf("start worker: %w", err)
 	}
+	// Reap detached workers when they exit so the server does not accumulate zombies.
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			m.logger.Debug().Err(err).Str("job_id", id).Msg("Background worker exited with an error")
+		}
+	}()
 	pidPath := filepath.Join(m.dir(id), "pid")
 	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0600); err != nil {
-		_ = terminateWorker(cmd.Process.Pid)
+		if terminateErr := terminateWorker(cmd.Process.Pid); terminateErr != nil {
+			m.logger.Warn().Err(terminateErr).Str("job_id", id).Msg("Could not terminate worker after PID persistence failed")
+		}
 		return nil, fmt.Errorf("persist worker PID: %w", err)
-	}
-	if err := cmd.Process.Release(); err != nil {
-		m.logger.Warn().Err(err).Str("job_id", id).Msg("Could not release worker handle")
 	}
 	return job, nil
 }
