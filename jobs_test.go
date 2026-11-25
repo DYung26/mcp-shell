@@ -236,7 +236,7 @@ func TestJobManager_pruneCompletedJobsRemovesOldestTerminalRecordsOnly(t *testin
 	_, err = os.Stat(manager.dir(jobs[1].ID))
 	require.NoError(t, err, "active job must never be pruned")
 	_, err = os.Stat(manager.dir(jobs[2].ID))
-	require.NoError(t, err, "newer completed job should be retained")
+	require.ErrorIs(t, err, os.ErrNotExist, "next-oldest completed job should also be pruned to make room")
 	_, err = os.Stat(manager.dir(jobs[3].ID))
 	require.NoError(t, err, "newest completed job should be retained")
 }
