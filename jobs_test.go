@@ -208,6 +208,55 @@ func TestLimitedWriterCapsOutputAndReportsTruncation(t *testing.T) {
 	require.True(t, writer.truncated)
 }
 
+func TestJobManager_pruneCompletedJobsRemovesOldestTerminalRecordsOnly(t *testing.T) {
+	root := t.TempDir()
+	manager := &JobManager{
+		root:   root,
+		config: SecurityConfig{MaxRetainedJobs: 3},
+		logger: zerolog.New(zerolog.NewTestWriter(t)),
+	}
+	created := time.Now().UTC()
+	jobs := []*JobRecord{
+		{ID: "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f0", Status: jobSucceeded, CreatedAt: created.Add(-4 * time.Minute)},
+		{ID: "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f1", Status: jobRunning, CreatedAt: created.Add(-3 * time.Minute)},
+		{ID: "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f2", Status: jobFailed, CreatedAt: created.Add(-2 * time.Minute)},
+		{ID: "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f3", Status: jobSucceeded, CreatedAt: created.Add(-time.Minute)},
+	}
+	for _, job := range jobs {
+		require.NoError(t, manager.write(job))
+	}
+
+	// list() sorts newest first; pruning walks from the end and skips active jobs.
+	records, err := manager.list()
+	require.NoError(t, err)
+	require.NoError(t, manager.pruneCompletedJobs(records))
+
+	_, err = os.Stat(manager.dir(jobs[0].ID))
+	require.ErrorIs(t, err, os.ErrNotExist, "oldest completed job should be pruned")
+	_, err = os.Stat(manager.dir(jobs[1].ID))
+	require.NoError(t, err, "active job must never be pruned")
+	_, err = os.Stat(manager.dir(jobs[2].ID))
+	require.NoError(t, err, "newer completed job should be retained")
+	_, err = os.Stat(manager.dir(jobs[3].ID))
+	require.NoError(t, err, "newest completed job should be retained")
+}
+
+func TestJobManager_pruneCompletedJobsUsesDefaultLimit(t *testing.T) {
+	manager := &JobManager{root: t.TempDir(), logger: zerolog.New(zerolog.NewTestWriter(t))}
+	created := time.Now().UTC()
+	jobs := []*JobRecord{
+		{ID: "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f0", Status: jobSucceeded, CreatedAt: created.Add(-time.Minute)},
+	}
+	for _, job := range jobs {
+		require.NoError(t, manager.write(job))
+	}
+	records, err := manager.list()
+	require.NoError(t, err)
+	require.NoError(t, manager.pruneCompletedJobs(records))
+	_, err = os.Stat(manager.dir(jobs[0].ID))
+	require.NoError(t, err, "default limit should not prune below capacity")
+}
+
 func TestJobManager_deleteRejectsActiveAndRemovesCompletedJobs(t *testing.T) {
 	manager := &JobManager{root: t.TempDir()}
 	job := &JobRecord{

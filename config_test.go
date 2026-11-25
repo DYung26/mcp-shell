@@ -25,6 +25,7 @@ func TestLoadConfig_defaults(t *testing.T) {
 	assert.False(t, config.Security.UseShellExecution)
 	assert.NotEmpty(t, config.Security.AllowedExecutables)
 	assert.Equal(t, 24*time.Hour, config.Security.MaxBackgroundExecutionTime)
+	assert.Equal(t, defaultMaxRetainedJobs, config.Security.MaxRetainedJobs)
 	// No shell/language interpreter ships in the default allowlist.
 	for _, exe := range config.Security.AllowedExecutables {
 		assert.False(t, isInterpreterExecutable(exe),
@@ -90,6 +91,7 @@ security:
     - "/usr/bin/git"
   max_execution_time: "10s"
   max_background_execution_time: "2m"
+  max_retained_jobs: 42
   working_directory: "/tmp"
   run_as_user: "nobody"
   max_output_size: 2048
@@ -102,6 +104,7 @@ security:
 				assert.Equal(t, []string{"ls", "echo", "/usr/bin/git"}, config.Security.AllowedExecutables)
 				assert.Equal(t, 10*time.Second, config.Security.MaxExecutionTime)
 				assert.Equal(t, 2*time.Minute, config.Security.MaxBackgroundExecutionTime)
+				assert.Equal(t, 42, config.Security.MaxRetainedJobs)
 				assert.Equal(t, "/tmp", config.Security.WorkingDirectory)
 				assert.Equal(t, "nobody", config.Security.RunAsUser)
 				assert.Equal(t, 2048, config.Security.MaxOutputSize)
@@ -142,6 +145,15 @@ security:
 security:
   enabled: true
   max_execution_time: "invalid_duration"
+`,
+			expectError: true,
+		},
+		{
+			name: "invalid max_retained_jobs",
+			yamlContent: `
+security:
+  enabled: true
+  max_retained_jobs: 0
 `,
 			expectError: true,
 		},

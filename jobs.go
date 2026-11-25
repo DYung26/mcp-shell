@@ -21,14 +21,14 @@ import (
 )
 
 const (
-	jobQueued       = "queued"
-	jobRunning      = "running"
-	jobSucceeded    = "succeeded"
-	jobFailed       = "failed"
-	jobCancelled    = "cancelled"
-	jobTimedOut     = "timed_out"
-	maxActiveJobs   = 32
-	maxRetainedJobs = 1000
+	jobQueued              = "queued"
+	jobRunning             = "running"
+	jobSucceeded           = "succeeded"
+	jobFailed              = "failed"
+	jobCancelled           = "cancelled"
+	jobTimedOut            = "timed_out"
+	maxActiveJobs          = 32
+	defaultMaxRetainedJobs = 1000
 )
 
 type JobRecord struct {
@@ -53,13 +53,6 @@ type JobOutput struct {
 	StdoutOffset int64  `json:"stdout_offset"`
 	StderrOffset int64  `json:"stderr_offset"`
 }
-
-type jobRetentionPolicy uint8
-
-const (
-	jobRetentionStrict jobRetentionPolicy = iota
-	jobRetentionAllowSingleOverflow
-)
 
 type jobListOptions struct {
 	Limit           int
@@ -99,14 +92,6 @@ func newJobManager(config SecurityConfig, logger zerolog.Logger) *JobManager {
 }
 
 func (m *JobManager) start(command string, executionTimeout time.Duration) (*JobRecord, error) {
-	return m.startWithRetentionPolicy(command, executionTimeout, jobRetentionStrict)
-}
-
-func (m *JobManager) startShellExec(command string, executionTimeout time.Duration) (*JobRecord, error) {
-	return m.startWithRetentionPolicy(command, executionTimeout, jobRetentionAllowSingleOverflow)
-}
-
-func (m *JobManager) startWithRetentionPolicy(command string, executionTimeout time.Duration, retentionPolicy jobRetentionPolicy) (*JobRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := os.MkdirAll(m.root, 0700); err != nil {
@@ -125,8 +110,8 @@ func (m *JobManager) startWithRetentionPolicy(command string, executionTimeout t
 	if active >= maxActiveJobs {
 		return nil, fmt.Errorf("background job limit reached (%d active)", maxActiveJobs)
 	}
-	if len(records) >= maxRetainedJobs && (retentionPolicy != jobRetentionAllowSingleOverflow || len(records) > maxRetainedJobs) {
-		return nil, fmt.Errorf("job retention limit reached; remove old records from %s", m.root)
+	if err := m.pruneCompletedJobs(records); err != nil {
+		return nil, err
 	}
 
 	id := uuid.NewString()
@@ -162,6 +147,32 @@ func (m *JobManager) startWithRetentionPolicy(command string, executionTimeout t
 		return nil, fmt.Errorf("persist worker PID: %w", err)
 	}
 	return job, nil
+}
+
+// pruneCompletedJobs removes the oldest terminal records until there is room
+// for one new job. Active jobs are never eligible for automatic deletion.
+// records must be sorted newest first, as returned by list().
+func (m *JobManager) pruneCompletedJobs(records []*JobRecord) error {
+	limit := m.config.MaxRetainedJobs
+	if limit <= 0 {
+		limit = defaultMaxRetainedJobs
+	}
+	remaining := len(records)
+	for i := len(records) - 1; remaining >= limit && i >= 0; i-- {
+		job := records[i]
+		if job.Status == jobQueued || job.Status == jobRunning {
+			continue
+		}
+		if err := os.RemoveAll(m.dir(job.ID)); err != nil {
+			return fmt.Errorf("prune completed job %s: %w", job.ID, err)
+		}
+		remaining--
+		m.logger.Debug().Str("job_id", job.ID).Msg("Pruned oldest completed background job")
+	}
+	if remaining >= limit {
+		return fmt.Errorf("job retention limit reached (%d); no completed records can be pruned", limit)
+	}
+	return nil
 }
 
 func (m *JobManager) get(id string, stdoutOffset, stderrOffset int64, useBase64 bool) (*JobRecord, *JobOutput, error) {

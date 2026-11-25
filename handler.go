@@ -76,7 +76,7 @@ func (h *ShellHandler) handle(
 	if executionTimeout <= 0 {
 		executionTimeout = defaultCommandExecutionTimeout
 	}
-	job, err := h.jobs.startShellExec(command, executionTimeout)
+	job, err := h.jobs.start(command, executionTimeout)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -174,7 +174,8 @@ func (h *ShellHandler) getJob(_ context.Context, request mcp.CallToolRequest) (*
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return marshalToolResponse(map[string]interface{}{"job": job, "output": output})
+	canDelete := job.Status != jobQueued && job.Status != jobRunning
+	return marshalToolResponse(map[string]interface{}{"job": job, "output": output, "can_delete": canDelete})
 }
 
 func (h *ShellHandler) listJobs(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -132,14 +132,14 @@ func run() error {
 
 	backgroundTool := mcp.NewTool(
 		"shell_run_background",
-		mcp.WithDescription("Start a command as a durable background job and return immediately with its job_id. Use shell_get_job to retrieve status and incremental output."),
+		mcp.WithDescription("Start a command as a durable background job and return immediately with its job_id. Use shell_get_job to retrieve status and incremental output. When the retention limit is reached, the oldest completed jobs are pruned automatically; active jobs are preserved."),
 		mcp.WithString("command", mcp.Required(), mcp.Description("Command to execute under the configured shell security policy.")),
 	)
 	s.AddTool(backgroundTool, shellHandler.runBackground)
 
 	getJobTool := mcp.NewTool(
 		"shell_get_job",
-		mcp.WithDescription("Get a background job's status and the next output chunk. Pass returned offsets to retrieve subsequent chunks."),
+		mcp.WithDescription("Get a background job's status and the next output chunk. Pass returned offsets to retrieve subsequent chunks. The response includes can_delete=true when the job is complete and may be removed with shell_delete_job."),
 		mcp.WithString("job_id", mcp.Required(), mcp.Description("Job ID returned by shell_run_background or shell_exec handoff.")),
 		mcp.WithNumber("stdout_offset", mcp.Description("Byte offset for the next stdout chunk; default 0.")),
 		mcp.WithNumber("stderr_offset", mcp.Description("Byte offset for the next stderr chunk; default 0.")),

@@ -24,6 +24,7 @@ type SecurityConfig struct {
 	AllowedExecutables         []string      `yaml:"allowed_executables"` // Secure: list of allowed executable paths
 	MaxExecutionTime           time.Duration `yaml:"max_execution_time"`
 	MaxBackgroundExecutionTime time.Duration `yaml:"max_background_execution_time"`
+	MaxRetainedJobs            int           `yaml:"max_retained_jobs"`
 	WorkingDirectory           string        `yaml:"working_directory"`
 	RunAsUser                  string        `yaml:"run_as_user"`
 	MaxOutputSize              int           `yaml:"max_output_size"`
@@ -58,6 +59,7 @@ func newDefaultSecurityConfig() SecurityConfig {
 		},
 		MaxExecutionTime:           30 * time.Second,
 		MaxBackgroundExecutionTime: 24 * time.Hour,
+		MaxRetainedJobs:            defaultMaxRetainedJobs,
 		MaxOutputSize:              1048576,
 		WorkingDirectory:           "/tmp",
 		AuditLog:                   true,
@@ -115,6 +117,7 @@ func loadSecurityFromFile(config *Config, filename string) error {
 			AllowedExecutables         []string `yaml:"allowed_executables"`
 			MaxExecutionTime           string   `yaml:"max_execution_time"`
 			MaxBackgroundExecutionTime string   `yaml:"max_background_execution_time"`
+			MaxRetainedJobs            *int     `yaml:"max_retained_jobs"`
 			WorkingDirectory           string   `yaml:"working_directory"`
 			RunAsUser                  string   `yaml:"run_as_user"`
 			MaxOutputSize              int      `yaml:"max_output_size"`
@@ -138,6 +141,13 @@ func loadSecurityFromFile(config *Config, filename string) error {
 	config.Security.AuditLog = yamlConfig.Security.AuditLog
 	config.Security.UseShellExecution = yamlConfig.Security.UseShellExecution
 
+	if yamlConfig.Security.MaxRetainedJobs != nil {
+		if *yamlConfig.Security.MaxRetainedJobs <= 0 {
+			return fmt.Errorf("max_retained_jobs must be greater than zero")
+		}
+		config.Security.MaxRetainedJobs = *yamlConfig.Security.MaxRetainedJobs
+	}
+
 	if yamlConfig.Security.MaxBackgroundExecutionTime != "" {
 		duration, err := time.ParseDuration(yamlConfig.Security.MaxBackgroundExecutionTime)
 		if err != nil {
@@ -160,6 +170,10 @@ func loadSecurityFromFile(config *Config, filename string) error {
 func validateConfig(config *Config) error {
 	if config.Security.MaxBackgroundExecutionTime < 0 {
 		return fmt.Errorf("max_background_execution_time cannot be negative")
+	}
+
+	if config.Security.MaxRetainedJobs < 0 {
+		return fmt.Errorf("max_retained_jobs cannot be negative")
 	}
 
 	if config.Security.MaxOutputSize < 0 {

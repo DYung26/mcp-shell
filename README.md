@@ -65,6 +65,7 @@ security:
     - '(^|\s)remote\s+(-v|--verbose)(\s|$)'
   max_execution_time: 30s
   max_background_execution_time: 24h
+  max_retained_jobs: 1000
   max_output_size: 1048576
   working_directory: /tmp/mcp-workspace
   audit_log: true
@@ -129,7 +130,7 @@ Starts a command as a detached background job and immediately returns its `job_i
 
 ### `shell_get_job`
 
-Retrieves job status and the next stdout/stderr chunks. Required parameter: `job_id`. Optional `stdout_offset` and `stderr_offset` are byte offsets returned by the previous response; pass them back unchanged to retrieve only new output. Optional `base64` encodes output chunks.
+Retrieves job status and the next stdout/stderr chunks. Required parameter: `job_id`. Optional `stdout_offset` and `stderr_offset` are byte offsets returned by the previous response; pass them back unchanged to retrieve only new output. Optional `base64` encodes output chunks. The response includes `can_delete`: `true` once the job is terminal, indicating the caller can remove it with `shell_delete_job`; it is `false` while queued or running.
 
 Job states are `queued`, `running`, `succeeded`, `failed`, `cancelled`, and `timed_out`. Results include exit code, error details, timestamps, execution duration, and an output-truncated flag.
 
@@ -143,9 +144,9 @@ Cancels a queued or running job. On Unix, command timeouts terminate the command
 
 ### `shell_delete_job`
 
-Deletes a completed job's metadata and stored output. Active jobs must be cancelled first. Use this to reclaim space and keep the retained-job limit available.
+Deletes a completed job's metadata and stored output. Active jobs must be cancelled first. Use `can_delete` from `shell_get_job` to determine when a job is eligible for deletion. The server also prunes the oldest completed jobs automatically when it needs room under the retention limit.
 
-Background jobs run in detached worker processes and persist their metadata/output outside the MCP server process. They can continue across an MCP server restart while the host remains running, but are not guaranteed to survive host reboot or power loss. Defaults are 24 hours maximum background runtime, 32 active jobs, and 1,000 retained records. Job data is stored under the user's cache directory in `mcp-shell/jobs`; set `MCP_SHELL_JOB_DIR` to override it. Output is capped per stream by `max_output_size`.
+Background jobs run in detached worker processes and persist their metadata/output outside the MCP server process. They can continue across an MCP server restart while the host remains running, but are not guaranteed to survive host reboot or power loss. Defaults are 24 hours maximum background runtime, 32 active jobs, and 1,000 retained records. Set `security.max_retained_jobs` in the security YAML to change the retained-record limit. When the limit is reached, the oldest completed records are pruned automatically to make room; queued and running jobs are never pruned. Agents can also delete individual completed jobs after retrieving their results. Job data is stored under the user's cache directory in `mcp-shell/jobs`; set `MCP_SHELL_JOB_DIR` to override it. Output is capped per stream by `max_output_size`.
 
 `shell_exec` waits synchronously for up to 20 seconds by default (or the configured `background_after_seconds` threshold). If the command is still running, it returns the durable job ID and current output; use `shell_get_job` to continue retrieving output. Jobs that finish before handoff are removed after their result is collected, so only handed-off jobs consume retained-job capacity. Use `shell_run_background` when you want the job ID immediately.
 
