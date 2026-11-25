@@ -158,6 +158,32 @@ func TestShellHandler_listJobsReturnsFilteredPage(t *testing.T) {
 	require.Equal(t, jobs[0].ID, page.Jobs[0].ID)
 }
 
+func TestShellHandler_getJobReportsWhetherCompletedJobCanBeDeleted(t *testing.T) {
+	logger := zerolog.New(zerolog.NewTestWriter(t))
+	manager := &JobManager{root: t.TempDir(), logger: logger}
+	handler := &ShellHandler{jobs: manager}
+	job := &JobRecord{
+		ID:        "f60fbd50-9e16-4f3d-989c-0c7b05e2a4f0",
+		Status:    jobRunning,
+		CreatedAt: time.Now().UTC(),
+	}
+	require.NoError(t, manager.write(job))
+
+	request := mcp.CallToolRequest{}
+	request.Params.Arguments = map[string]interface{}{"job_id": job.ID}
+	result, err := handler.getJob(context.Background(), request)
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, `"can_delete":false`)
+
+	job.Status = jobSucceeded
+	require.NoError(t, manager.write(job))
+	result, err = handler.getJob(context.Background(), request)
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, `"can_delete":true`)
+}
+
 func TestShellHandler_handle_secure_mode(t *testing.T) {
 	t.Setenv("MCP_SHELL_JOB_DIR", t.TempDir())
 	logger := zerolog.New(zerolog.NewTestWriter(t))
