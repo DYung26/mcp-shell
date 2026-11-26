@@ -10,6 +10,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const defaultMaxBackgroundExecutionTime = 24 * time.Hour
+
 type Config struct {
 	Security SecurityConfig
 	Server   ServerConfig
@@ -58,7 +60,7 @@ func newDefaultSecurityConfig() SecurityConfig {
 			"cat", "grep", "find", "wc", "head", "tail", "sort", "uniq",
 		},
 		MaxExecutionTime:           30 * time.Second,
-		MaxBackgroundExecutionTime: 24 * time.Hour,
+		MaxBackgroundExecutionTime: defaultMaxBackgroundExecutionTime,
 		MaxRetainedJobs:            defaultMaxRetainedJobs,
 		MaxOutputSize:              1048576,
 		WorkingDirectory:           "/tmp",

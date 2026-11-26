@@ -72,17 +72,39 @@ func (h *ShellHandler) handle(
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
+	// max_execution_time bounds only the synchronous shell_exec phase. Once
+	// the command is handed off, the detached worker uses
+	// max_background_execution_time instead.
 	executionTimeout := h.executor.config.MaxExecutionTime
 	if executionTimeout <= 0 {
 		executionTimeout = defaultCommandExecutionTimeout
 	}
-	job, err := h.jobs.start(command, executionTimeout)
+	job, err := h.jobs.start(command, h.executor.config.MaxBackgroundExecutionTime)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	job, err = h.jobs.wait(ctx, job.ID, time.Duration(waitSeconds)*time.Second)
+	waitDuration := time.Duration(waitSeconds) * time.Second
+	waitForExecutionTimeout := executionTimeout <= waitDuration
+	if waitForExecutionTimeout {
+		waitDuration = executionTimeout
+	}
+	waitStartedAt := time.Now()
+	job, err = h.jobs.wait(ctx, job.ID, waitDuration)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
+	}
+	executionTimedOut := waitForExecutionTimeout && time.Since(waitStartedAt) >= executionTimeout
+	if executionTimedOut && (job.Status == jobQueued || job.Status == jobRunning) {
+		job, err = h.jobs.cancel(job.ID)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("execution exceeded %s; cancellation failed: %v", executionTimeout, err)), nil
+		}
+		if job.Status == jobCancelled {
+			if deleteErr := h.jobs.delete(job.ID); deleteErr != nil {
+				h.logger.Warn().Err(deleteErr).Str("job_id", job.ID).Msg("Could not remove timed-out shell_exec job")
+			}
+			return mcp.NewToolResultError(fmt.Sprintf("execution exceeded %s", executionTimeout)), nil
+		}
 	}
 
 	record, output, err := h.jobs.get(job.ID, 0, 0, useBase64)

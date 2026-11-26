@@ -24,7 +24,7 @@ func TestLoadConfig_defaults(t *testing.T) {
 	assert.True(t, config.Security.Enabled)
 	assert.False(t, config.Security.UseShellExecution)
 	assert.NotEmpty(t, config.Security.AllowedExecutables)
-	assert.Equal(t, 24*time.Hour, config.Security.MaxBackgroundExecutionTime)
+	assert.Equal(t, defaultMaxBackgroundExecutionTime, config.Security.MaxBackgroundExecutionTime)
 	assert.Equal(t, defaultMaxRetainedJobs, config.Security.MaxRetainedJobs)
 	// No shell/language interpreter ships in the default allowlist.
 	for _, exe := range config.Security.AllowedExecutables {

@@ -112,13 +112,13 @@ func run() error {
 	shellTool := mcp.NewTool(
 		"shell_exec",
 		mcp.WithDescription(
-			"Execute a command and wait synchronously for up to 20 seconds by default. If it is still running, return a durable job_id and current output; use shell_get_job to continue retrieving output.",
+			"Execute a command and wait synchronously for up to 20 seconds by default. If it is still running, return a durable job_id and current output; use shell_get_job to continue retrieving output. max_execution_time limits this synchronous phase; handed-off jobs use max_background_execution_time.",
 		),
 		mcp.WithString("command",
 			mcp.Required(),
 			mcp.Description("Shell command to execute"),
 		),
-		mcp.WithNumber("background_after_seconds", mcp.Description("Handoff threshold in seconds (default 20, maximum 300). Return the command result if it finishes within this period; otherwise return a job_id and current output.")),
+		mcp.WithNumber("background_after_seconds", mcp.Description("Handoff threshold in seconds (default 20, maximum 300). Return the command result if it finishes within this period; otherwise return a job_id and current output. The handed-off job then runs up to max_background_execution_time.")),
 		mcp.WithBoolean(
 			"base64",
 			mcp.DefaultBool(false),

@@ -79,7 +79,7 @@ func TestShellHandler_handleAppliesConfiguredExecutionTimeout(t *testing.T) {
 func TestShellHandler_handleHandsOffLongRunningCommand(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "security.yaml")
-	configData := []byte("security:\n  enabled: true\n  use_shell_execution: false\n  allowed_executables: [sleep]\n  max_execution_time: 5s\n  max_background_execution_time: 10s\n  max_output_size: 1024\n  working_directory: /tmp\n")
+	configData := []byte("security:\n  enabled: true\n  use_shell_execution: false\n  allowed_executables: [sleep]\n  max_execution_time: 1500ms\n  max_background_execution_time: 5s\n  max_output_size: 1024\n  working_directory: /tmp\n")
 	require.NoError(t, os.WriteFile(configPath, configData, 0600))
 	t.Setenv("MCP_SHELL_JOB_DIR", filepath.Join(root, "jobs"))
 	t.Setenv("MCP_SHELL_SEC_CONFIG_FILE", configPath)
@@ -88,8 +88,8 @@ func TestShellHandler_handleHandsOffLongRunningCommand(t *testing.T) {
 	config := SecurityConfig{
 		Enabled:                    true,
 		AllowedExecutables:         []string{"sleep"},
-		MaxExecutionTime:           5 * time.Second,
-		MaxBackgroundExecutionTime: 10 * time.Second,
+		MaxExecutionTime:           1500 * time.Millisecond,
+		MaxBackgroundExecutionTime: 5 * time.Second,
 		MaxOutputSize:              1024,
 		WorkingDirectory:           "/tmp",
 	}
@@ -114,6 +114,9 @@ func TestShellHandler_handleHandsOffLongRunningCommand(t *testing.T) {
 	job := response["job"].(map[string]interface{})
 	jobID := job["job_id"].(string)
 	require.NotEmpty(t, jobID)
+	// A handed-off worker must use the background limit, not the
+	// shorter synchronous shell_exec limit.
+	require.Equal(t, float64((5 * time.Second).Nanoseconds()), job["execution_timeout"])
 
 	completed, err := handler.jobs.wait(context.Background(), jobID, 3*time.Second)
 	require.NoError(t, err)
