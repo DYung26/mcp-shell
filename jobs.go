@@ -114,6 +114,13 @@ func (m *JobManager) start(command string, executionTimeout time.Duration) (*Job
 		return nil, err
 	}
 
+	if executionTimeout <= 0 {
+		executionTimeout = m.config.MaxBackgroundExecutionTime
+	}
+	if executionTimeout <= 0 {
+		executionTimeout = defaultMaxBackgroundExecutionTime
+	}
+
 	id := uuid.NewString()
 	job := &JobRecord{ID: id, Command: command, Status: jobQueued, CreatedAt: time.Now().UTC(), ExecutionTimeout: executionTimeout}
 	if err := m.write(job); err != nil {
@@ -453,7 +460,7 @@ func (m *JobManager) runWorker(id string) error {
 		timeout = m.config.MaxBackgroundExecutionTime
 	}
 	if timeout <= 0 {
-		timeout = 24 * time.Hour
+		timeout = defaultMaxBackgroundExecutionTime
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
